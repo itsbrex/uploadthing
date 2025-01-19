@@ -1,12 +1,12 @@
-import { createServerHandler } from "uploadthing/server";
+import type { APIEvent } from "@solidjs/start/server";
+
+import { createRouteHandler } from "uploadthing/server";
 
 import { uploadRouter } from "~/server/uploadthing";
 
-export const { GET, POST } = createServerHandler({
+const handler = createRouteHandler({
   router: uploadRouter,
-  config: {
-    callbackUrl: `http://localhost:${
-      import.meta.env.VITE_PORT ?? 9898
-    }/api/uploadthing`,
-  },
 });
+
+export const GET = (event: APIEvent) => handler(event.request);
+export const POST = (event: APIEvent) => handler(event.request);

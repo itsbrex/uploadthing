@@ -1,11 +1,15 @@
-import "./styles.css";
-
 export {
   UploadButton,
   UploadDropzone,
   Uploader,
-  generateComponents,
-} from "./component";
+  generateUploadButton,
+  generateUploadDropzone,
+  generateUploader,
+} from "./components";
+
+export { generateReactHelpers } from "./use-uploadthing";
 
 export type * from "./types";
-export type * from "./use-dropzone/types";
+
+export { useDropzone } from "./components/dropzone";
+export type * from "./components/dropzone";

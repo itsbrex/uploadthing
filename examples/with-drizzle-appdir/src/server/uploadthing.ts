@@ -6,7 +6,19 @@ import type { FileRouter } from "uploadthing/next";
 import { db } from "~/server/db";
 import { files } from "./db/schema";
 
-const f = createUploadthing();
+const f = createUploadthing({
+  /**
+   * Log out more information about the error, but don't return it to the client
+   * @see https://docs.uploadthing.com/errors#error-formatting
+   */
+  errorFormatter: (err) => {
+    console.log("Error uploading file", err.message);
+    console.log("  - Above error caused by:", err.cause);
+
+    return { message: err.message };
+  },
+});
+
 /**
  * This is your Uploadthing file router. For more information:
  * @see https://docs.uploadthing.com/api-reference/server#file-routes
@@ -23,8 +35,6 @@ export const uploadRouter = {
   })
     .middleware(({ req }) => {
       // Check some condition based on the incoming requrest
-      req;
-      //^?
       // if (!req.headers.get("x-some-header")) {
       //   throw new Error("x-some-header is required");
       // }
@@ -38,7 +48,7 @@ export const uploadRouter = {
       await db.insert(files).values({
         name: file.name,
         key: file.key,
-        url: file.url,
+        url: file.ufsUrl,
         uploadedBy: metadata.uploaderId,
       });
 

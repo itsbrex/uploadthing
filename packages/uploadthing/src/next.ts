@@ -1,73 +1,34 @@
+import type { NextRequest } from "next/server";
+import * as Effect from "effect/Effect";
+
 import type { Json } from "@uploadthing/shared";
-import { getStatusCodeFromError, UploadThingError } from "@uploadthing/shared";
 
-import { UPLOADTHING_VERSION } from "./constants";
-import { defaultErrorFormatter } from "./internal/error-formatter";
-import type { RouterWithConfig } from "./internal/handler";
-import {
-  buildPermissionsInfoHandler,
-  buildRequestHandler,
-} from "./internal/handler";
-import type { FileRouter, inferErrorShape } from "./internal/types";
-import type { CreateBuilderOptions } from "./internal/upload-builder";
-import { createBuilder } from "./internal/upload-builder";
+import { makeAdapterHandler } from "./_internal/handler";
+import type { CreateBuilderOptions } from "./_internal/upload-builder";
+import { createBuilder } from "./_internal/upload-builder";
+import type { FileRouter, RouteHandlerOptions } from "./types";
 
-export type { FileRouter } from "./internal/types";
+export type { FileRouter };
+export { UTFiles } from "./_internal/types";
+
+type AdapterArgs = {
+  req: NextRequest;
+  res: undefined;
+  event: undefined;
+};
 
 export const createUploadthing = <TErrorShape extends Json>(
   opts?: CreateBuilderOptions<TErrorShape>,
-) => createBuilder<"app", TErrorShape>(opts);
+) => createBuilder<AdapterArgs, TErrorShape>(opts);
 
-export const createNextRouteHandler = <TRouter extends FileRouter>(
-  opts: RouterWithConfig<TRouter>,
+export const createRouteHandler = <TRouter extends FileRouter>(
+  opts: RouteHandlerOptions<TRouter>,
 ) => {
-  const requestHandler = buildRequestHandler<TRouter, "app">(opts);
-
-  const POST = async (req: Request) => {
-    const response = await requestHandler({ req });
-    const errorFormatter =
-      opts.router[Object.keys(opts.router)[0]]?._def.errorFormatter ??
-      defaultErrorFormatter;
-
-    if (response instanceof UploadThingError) {
-      const formattedError = errorFormatter(
-        response,
-      ) as inferErrorShape<TRouter>;
-      return new Response(JSON.stringify(formattedError), {
-        status: getStatusCodeFromError(response),
-        headers: {
-          "x-uploadthing-version": UPLOADTHING_VERSION,
-        },
-      });
-    }
-    if (response.status !== 200) {
-      // We messed up - this should never happen
-      return new Response("An unknown error occured", {
-        status: 500,
-        headers: {
-          "x-uploadthing-version": UPLOADTHING_VERSION,
-        },
-      });
-    }
-
-    return new Response(JSON.stringify(response.body), {
-      status: response.status,
-      headers: {
-        "x-uploadthing-version": UPLOADTHING_VERSION,
-      },
-    });
-  };
-
-  const getBuildPerms = buildPermissionsInfoHandler<TRouter>(opts);
-
-  const GET = () => {
-    return new Response(JSON.stringify(getBuildPerms()), {
-      status: 200,
-      headers: {
-        "x-uploadthing-version": UPLOADTHING_VERSION,
-      },
-    });
-  };
-
-  return { GET, POST };
+  const handler = makeAdapterHandler<[NextRequest]>(
+    (req) => Effect.succeed({ req, res: undefined, event: undefined }),
+    (req) => Effect.succeed(req),
+    opts,
+    "nextjs-app",
+  );
+  return { POST: handler, GET: handler };
 };

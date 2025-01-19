@@ -13,31 +13,53 @@
  * MIT Licensed
  */
 
-/**
- * Module dependencies.
- * @private
- */
-import { mimeTypes as mimeDB } from "./db";
-import type { FileExtension, MimeType } from "./db";
+import { application } from "./application";
+import { audio } from "./audio";
+import { image } from "./image";
+import { misc } from "./misc";
+import { text } from "./text";
+import { video } from "./video";
+
+const mimes = {
+  ...application,
+  ...audio,
+  ...image,
+  ...text,
+  ...video,
+  ...misc,
+};
+
+export type MimeType = keyof typeof mimes;
+export type FileExtension = (typeof mimes)[MimeType]["extensions"][number];
+
+export const mimeTypes = mimes as unknown as Record<
+  MimeType,
+  { source: string; extensions: FileExtension[] }
+>;
 
 function extname(path: string) {
   const index = path.lastIndexOf(".");
   return index < 0 ? "" : path.substring(index);
 }
 
-export const extensions = {} as Record<MimeType, FileExtension[]>;
-export const types = {} as Record<FileExtension, MimeType>;
+const extensions = {} as Record<MimeType, FileExtension[]>;
+const types = {} as Record<FileExtension, MimeType>;
 
-// Populate the extensions/types maps
-populateMaps(extensions, types);
+// Introduce getters to improve tree-shakeability
+export function getTypes(): Record<FileExtension, MimeType> {
+  populateMaps(extensions, types);
+  return types;
+}
+
+export function getExtensions(): Record<MimeType, FileExtension[]> {
+  populateMaps(extensions, types);
+  return extensions;
+}
 
 /**
  * Lookup the MIME type for a file path/extension.
- *
- * @param {string} path
- * @return {boolean|string}
  */
-export function lookup(path: string) {
+export function lookup(path: string): false | MimeType {
   if (!path || typeof path !== "string") {
     return false;
   }
@@ -45,15 +67,17 @@ export function lookup(path: string) {
   // get the extension ("ext" or ".ext" or full path)
   const extension = extname("x." + path)
     .toLowerCase()
-    .substring(1) as FileExtension;
+    .substring(1);
 
   if (!extension) {
     return false;
   }
 
-  return types[extension] || false;
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  return getTypes()[extension as keyof typeof types] || false;
 }
 
+let inittedMaps = false;
 /**
  * Populate the extensions and types maps.
  * @private
@@ -63,14 +87,16 @@ function populateMaps(
   extensions: Record<MimeType, FileExtension[]>,
   types: Record<FileExtension, MimeType>,
 ) {
+  if (inittedMaps) return;
+  inittedMaps = true;
   // source preference (least -> most)
   const preference = ["nginx", "apache", undefined, "iana"];
 
-  (Object.keys(mimeDB) as MimeType[]).forEach((type) => {
-    const mime = mimeDB[type];
+  (Object.keys(mimeTypes) as MimeType[]).forEach((type) => {
+    const mime = mimeTypes[type];
     const exts = mime.extensions;
 
-    if (!exts?.length) {
+    if (!exts.length) {
       return;
     }
 
@@ -80,8 +106,8 @@ function populateMaps(
     // extension -> mime
 
     for (const extension of exts) {
-      if (types[extension]) {
-        const from = preference.indexOf(mimeDB[types[extension]].source);
+      if (extension in types) {
+        const from = preference.indexOf(mimeTypes[types[extension]].source);
         const to = preference.indexOf(mime.source);
 
         if (

@@ -12,10 +12,10 @@
    https://clerk.com/docs/quickstarts/nextjs#set-environment-keys
 3. `cp .env.example .env` and paste in your API keys in the newly created `.env`
    file
-4. `pnpm dev`
+4. `pnpm i && pnpm dev`
 5. Try to upload files without being signed in
 6. Sign in and try again
 
 ## Further reference
 
-Check out the docs at: https://docs.uploadthing.com/nextjs/appdir
+Check out the docs at: https://docs.uploadthing.com/getting-started/appdir

@@ -1,12 +1,19 @@
-import { createServerHandler } from "uploadthing/server";
+import { UPLOADTHING_TOKEN } from "astro:env/server";
 
-import { uploadRouter } from "../../server/uploadthing";
+import { createRouteHandler } from "uploadthing/server";
 
-export const { GET, POST } = createServerHandler({
+import { uploadRouter } from "~/server/uploadthing";
+
+/**
+ * This example uses the hybrid mode so we must opt-in to dynamic rendering
+ * https://docs.astro.build/en/guides/endpoints/#server-endpoints-api-routes
+ **/
+export const prerender = false;
+
+export const ALL = createRouteHandler({
   router: uploadRouter,
   config: {
-    uploadthingId: import.meta.env.UPLOADTHING_APPID,
-    uploadthingSecret: import.meta.env.UPLOADTHING_SECRET,
-    callbackUrl: "http://localhost:4321/api/uploadthing",
+    token: UPLOADTHING_TOKEN,
+    logLevel: "Debug",
   },
 });

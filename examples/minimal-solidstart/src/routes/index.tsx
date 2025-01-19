@@ -1,38 +1,55 @@
 import {
+  createUploadThing,
   UploadButton,
   UploadDropzone,
-  useUploadThing,
 } from "~/utils/uploadthing";
 
 export default function Home() {
-  const { startUpload } = useUploadThing("videoAndImage", {
-    onClientUploadComplete: () => {
+  const { startUpload } = createUploadThing("videoAndImage", {
+    /**
+     * @see https://docs.uploadthing.com/api-reference/react#useuploadthing
+     */
+    onUploadBegin: (fileName) => {
+      console.log("onUploadBegin", fileName);
+    },
+    onClientUploadComplete: (res) => {
+      console.log(`onClientUploadComplete`, res);
       alert("Upload Completed");
     },
   });
 
   return (
-    <main>
+    <main class="flex flex-col gap-4 p-8">
       <UploadButton
+        /**
+         * @see https://docs.uploadthing.com/api-reference/react#uploadbutton
+         */
         endpoint="videoAndImage"
-        multiple
+        onUploadBegin={(fileName) => {
+          console.log("onUploadBegin", fileName);
+        }}
+        onUploadAborted={() => {
+          alert("Upload Aborted");
+        }}
         onClientUploadComplete={(res) => {
           console.log(`onClientUploadComplete`, res);
           alert("Upload Completed");
-        }}
-        onUploadBegin={() => {
-          console.log("upload begin");
         }}
       />
       <UploadDropzone
-        endpoint="videoAndImage"
-        multiple
+        /**
+         * @see https://docs.uploadthing.com/api-reference/react#uploaddropzone
+         */
+        endpoint={(routeRegistry) => routeRegistry.videoAndImage}
+        onUploadBegin={(fileName) => {
+          console.log("onUploadBegin", fileName);
+        }}
+        onUploadAborted={() => {
+          alert("Upload Aborted");
+        }}
         onClientUploadComplete={(res) => {
           console.log(`onClientUploadComplete`, res);
           alert("Upload Completed");
-        }}
-        onUploadBegin={() => {
-          console.log("upload begin");
         }}
       />
       <input

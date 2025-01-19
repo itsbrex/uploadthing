@@ -1,4 +1,11 @@
 import "./styles.css";
 
-export * from "./useUploadThing";
-export * from "./component";
+export * from "./create-uploadthing";
+export {
+  UploadButton,
+  UploadDropzone,
+  Uploader,
+  generateUploadButton,
+  generateUploadDropzone,
+  generateUploader,
+} from "./components";

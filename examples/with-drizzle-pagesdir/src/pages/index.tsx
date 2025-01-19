@@ -48,7 +48,7 @@ export default function Page() {
         /**
          * @see https://docs.uploadthing.com/api-reference/react#uploaddropzone
          */
-        endpoint="videoAndImage"
+        endpoint={(routeRegistry) => routeRegistry.videoAndImage}
         onClientUploadComplete={(res) => {
           console.log(`onClientUploadComplete`, res);
         }}
@@ -61,7 +61,7 @@ export default function Page() {
         {isLoading && <div>Waiting for files...</div>}
         {files?.length === 0 && <i>No files uploaded yet</i>}
         {files?.map((file) => (
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8 }} key={file.id}>
             <div>Name: {file.name}</div>
             <a href={file.url} target="_blank">
               View

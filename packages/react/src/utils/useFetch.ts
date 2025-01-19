@@ -1,9 +1,12 @@
 // Ripped from https://usehooks-ts.com/react-hook/use-fetch
 import { useEffect, useReducer, useRef } from "react";
 
+import type { FetchEsque } from "@uploadthing/shared";
+import { safeParseJSON } from "@uploadthing/shared";
+
 interface State<T> {
-  data?: T;
-  error?: Error;
+  data?: T | undefined;
+  error?: Error | undefined;
 }
 
 type Cache<T> = Record<string, T>;
@@ -14,7 +17,11 @@ type Action<T> =
   | { type: "fetched"; payload: T }
   | { type: "error"; payload: Error };
 
-function useFetch<T = unknown>(url?: string, options?: RequestInit): State<T> {
+function useFetch<T = unknown>(
+  fetch: FetchEsque,
+  url?: string,
+  options?: RequestInit,
+): State<T> {
   const cache = useRef<Cache<T>>({});
 
   // Used to prevent state update if the component is unmounted
@@ -62,11 +69,15 @@ function useFetch<T = unknown>(url?: string, options?: RequestInit): State<T> {
           throw new Error(response.statusText);
         }
 
-        const data = (await response.json()) as T;
-        cache.current[url] = data;
+        const dataOrError = await safeParseJSON<T>(response);
+        if (dataOrError instanceof Error) {
+          throw dataOrError;
+        }
+
+        cache.current[url] = dataOrError;
         if (cancelRequest.current) return;
 
-        dispatch({ type: "fetched", payload: data });
+        dispatch({ type: "fetched", payload: dataOrError });
       } catch (error) {
         if (cancelRequest.current) return;
 

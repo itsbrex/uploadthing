@@ -1,24 +1,13 @@
 /* eslint-disable @typescript-eslint/no-empty-function */
-
-import type { NextApiRequest, NextApiResponse } from "next";
-import type { NextRequest } from "next/server";
 import { expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 
-import type { UnsetMarker } from "../src/internal/types";
-import { createBuilder } from "../src/internal/upload-builder";
-
-const badReqMock = {
-  headers: {
-    get(key: string) {
-      if (key === "header1") return "woohoo";
-      return null;
-    },
-  },
-} as unknown as Request;
+import { getParseFn } from "../src/_internal/parser";
+import { UTFiles } from "../src/_internal/types";
+import { createBuilder } from "../src/_internal/upload-builder";
 
 it("typeerrors for invalid input", () => {
-  const f = createBuilder();
+  const f = createBuilder<{ req: Request; res: undefined; event: undefined }>();
 
   // @ts-expect-error - invalid file type
   f(["png"]);
@@ -54,20 +43,6 @@ it("typeerrors for invalid input", () => {
     });
 
   f(["image"])
-    // @ts-expect-error - date is not allowed
-    .input(z.object({ foo: z.date() }))
-    .middleware(() => {
-      return {};
-    });
-
-  f(["image"])
-    // @ts-expect-error - set is not allowed
-    .input(z.object({ foo: z.set() }))
-    .middleware(() => {
-      return {};
-    });
-
-  f(["image"])
     .input(z.object({ foo: z.string() }))
     .middleware((opts) => {
       expectTypeOf<{ foo: string }>(opts.input);
@@ -75,35 +50,37 @@ it("typeerrors for invalid input", () => {
     })
     // @ts-expect-error - cannot set multiple middlewares
     .middleware(() => {});
+
+  f(["image"])
+    // @ts-expect-error - callback data must be a JSON object
+    .onUploadComplete(() => "foo");
+
+  f(["image"])
+    // @ts-expect-error - callback data must be a JSON object
+    .onUploadComplete(() => 1);
 });
 
 it("uses defaults for not-chained", async () => {
-  const f = createBuilder();
+  const f = createBuilder<{ req: Request; res: undefined; event: undefined }>();
 
   const uploadable = f(["image"]).onUploadComplete(() => {});
 
-  expect(uploadable._def.routerConfig).toEqual(["image"]);
+  expect(uploadable.routerConfig).toEqual(["image"]);
 
-  const metadata = await uploadable._def.middleware({
-    req: badReqMock,
-    input: {} as UnsetMarker,
+  const metadata = await uploadable.middleware({
+    req: new Request("http://localhost", {
+      headers: { header1: "woohoo" },
+    }),
+    res: undefined,
+    event: undefined,
+    input: undefined,
+    files: [{ name: "test.txt", size: 123456, type: "text/plain" }],
   });
   expect(metadata).toEqual({});
-  expectTypeOf<Record<string, never>>(metadata);
-});
-
-it("passes `Request` by default", () => {
-  const f = createBuilder();
-
-  f(["image"]).middleware((opts) => {
-    expectTypeOf<Request>(opts.req);
-
-    return {};
-  });
 });
 
 it("allows async middleware", () => {
-  const f = createBuilder();
+  const f = createBuilder<{ req: Request; res: undefined; event: undefined }>();
 
   f(["image"])
     .middleware((opts) => {
@@ -116,44 +93,28 @@ it("allows async middleware", () => {
     });
 });
 
-it("passes `NextRequest` for /app", () => {
-  const f = createBuilder<"app">();
-
-  f(["image"]).middleware((opts) => {
-    expectTypeOf<NextRequest>(opts.req);
-    return { nextUrl: opts.req.nextUrl };
-  });
-});
-
-it("passes `res` for /pages", () => {
-  const f = createBuilder<"pages">();
-
-  f(["image"]).middleware((opts) => {
-    expectTypeOf<NextApiRequest>(opts.req);
-    expectTypeOf<NextApiResponse>(opts.res);
-
-    return {};
-  });
-});
-
-it("with input", () => {
-  const f = createBuilder();
+it("can append a customId", () => {
+  const f = createBuilder<{ req: Request; res: undefined; event: undefined }>();
   f(["image"])
-    .input(z.object({ foo: z.string() }))
-    .middleware((opts) => {
-      expectTypeOf<{ foo: string }>(opts.input);
-      return {};
+    .middleware(({ files }) => {
+      const overrides = files.map((f) => ({ ...f, customId: "123" }));
+      return { [UTFiles]: overrides, foo: "bar" };
+    })
+    .onUploadComplete(({ metadata, file }) => {
+      expectTypeOf<{ foo: string }>(metadata);
+      expectTypeOf<{ customId: string | null }>(file);
     });
 });
 
 it("smoke", async () => {
-  const f = createBuilder();
+  const f = createBuilder<{ req: Request; res: undefined; event: undefined }>();
 
   const uploadable = f(["image", "video"])
     .input(z.object({ foo: z.string() }))
     .middleware((opts) => {
       expect(opts.input).toEqual({ foo: "bar" });
       expectTypeOf<{ foo: string }>(opts.input);
+      expectTypeOf<readonly { name: string; size: number }[]>(opts.files);
 
       const header1 = opts.req.headers.get("header1");
 
@@ -170,11 +131,29 @@ it("smoke", async () => {
       }>(metadata);
     });
 
-  expect(uploadable._def.routerConfig).toEqual(["image", "video"]);
+  expect(uploadable.routerConfig).toEqual(["image", "video"]);
 
-  const metadata = await uploadable._def.middleware({
-    req: badReqMock,
-    input: { foo: "bar" },
+  const parsedInput = await getParseFn(uploadable.inputParser)({ foo: "bar" });
+
+  const metadata = await uploadable.middleware({
+    req: new Request("http://localhost", {
+      headers: { header1: "woohoo" },
+    }),
+    input: parsedInput,
+    res: undefined,
+    event: undefined,
+    files: [{ name: "test.txt", size: 123456, type: "text/plain" }],
   });
   expect(metadata).toEqual({ header1: "woohoo", userId: "123" });
+});
+
+it("allows nested structure in output", () => {
+  const f = createBuilder<{ req: Request; res: undefined; event: undefined }>();
+
+  f(["image"]).onUploadComplete(() => {
+    return {
+      foo: "br",
+      arr: [{ bar: "baz" }],
+    };
+  });
 });

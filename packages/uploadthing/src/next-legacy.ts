@@ -1,74 +1,44 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import * as Effect from "effect/Effect";
 
-import { getStatusCodeFromError, UploadThingError } from "@uploadthing/shared";
 import type { Json } from "@uploadthing/shared";
 
-import { UPLOADTHING_VERSION } from "./constants";
-import { defaultErrorFormatter } from "./internal/error-formatter";
-import {
-  buildPermissionsInfoHandler,
-  buildRequestHandler,
-} from "./internal/handler";
-import type { RouterWithConfig } from "./internal/handler";
-import type { FileRouter, inferErrorShape } from "./internal/types";
-import type { CreateBuilderOptions } from "./internal/upload-builder";
-import { createBuilder } from "./internal/upload-builder";
+import { makeAdapterHandler } from "./_internal/handler";
+import { toWebRequest } from "./_internal/to-web-request";
+import type { CreateBuilderOptions } from "./_internal/upload-builder";
+import { createBuilder } from "./_internal/upload-builder";
+import type { FileRouter, RouteHandlerOptions } from "./types";
 
-export type { FileRouter } from "./internal/types";
+export { UTFiles } from "./_internal/types";
+export type { FileRouter };
+
+type AdapterArgs = {
+  req: NextApiRequest;
+  res: NextApiResponse;
+  event: undefined;
+};
 
 export const createUploadthing = <TErrorShape extends Json>(
   opts?: CreateBuilderOptions<TErrorShape>,
-) => createBuilder<"pages", TErrorShape>(opts);
+) => createBuilder<AdapterArgs, TErrorShape>(opts);
 
-export const createNextPageApiHandler = <TRouter extends FileRouter>(
-  opts: RouterWithConfig<TRouter>,
+export const createRouteHandler = <TRouter extends FileRouter>(
+  opts: RouteHandlerOptions<TRouter>,
 ) => {
-  const requestHandler = buildRequestHandler<TRouter, "pages">(opts);
-  const errorFormatter =
-    opts.router[Object.keys(opts.router)[0]]?._def.errorFormatter ??
-    defaultErrorFormatter;
-
-  const getBuildPerms = buildPermissionsInfoHandler<TRouter>(opts);
+  const handler = makeAdapterHandler<[NextApiRequest, NextApiResponse]>(
+    (req, res) => Effect.succeed({ req, res, event: undefined }),
+    (req) => toWebRequest(req),
+    opts,
+    "nextjs-pages",
+  );
 
   return async (req: NextApiRequest, res: NextApiResponse) => {
-    // Return valid endpoints
-    if (req.method === "GET") {
-      const perms = getBuildPerms();
-      res.status(200).json(perms);
-      return;
-    }
-
-    const response = await requestHandler({
-      req: Object.assign(req, {
-        json: () =>
-          Promise.resolve(
-            JSON.parse(
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-              req.body,
-            ),
-          ),
-      }),
-      res,
-    });
-
-    res.setHeader("x-uploadthing-version", UPLOADTHING_VERSION);
-
-    if (response instanceof UploadThingError) {
-      res.status(getStatusCodeFromError(response));
-      res.setHeader("x-uploadthing-version", UPLOADTHING_VERSION);
-      const formattedError = errorFormatter(
-        response,
-      ) as inferErrorShape<TRouter>;
-      return res.json(formattedError);
-    }
-
-    if (response.status !== 200) {
-      // We messed up - this should never happen
-      res.status(500);
-      return res.send("An unknown error occured");
-    }
-
+    const response = await handler(req, res);
     res.status(response.status);
-    return res.json(response.body);
+    for (const [name, value] of response.headers) {
+      res.setHeader(name, value);
+    }
+    // FIXME: Should be able to just forward it instead of consuming it first
+    return res.json(await response.json());
   };
 };

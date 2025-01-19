@@ -7,11 +7,11 @@ export const env = createEnv({
    * isn't built with invalid env vars.
    */
   server: {
-    UPLOADTHING_APP_ID: z.string().min(1),
-    UPLOADTHING_SECRET: z.string().min(1),
+    UPLOADTHING_TOKEN: z.string().base64(),
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
+    DATABASE_URL: z.string(),
   },
 
   /**
@@ -20,16 +20,14 @@ export const env = createEnv({
    * `NEXT_PUBLIC_`.
    */
   client: {
-    // NEXT_PUBLIC_CLIENTVAR: z.string().min(1),
+    // NEXT_PUBLIC_CLIENTVAR: z.string(),
   },
 
   /**
    * You can't destruct `process.env` as a regular object in the Next.js edge runtimes (e.g.
    * middlewares) or client-side so we need to destruct manually.
    */
-  runtimeEnv: {
-    UPLOADTHING_APP_ID: process.env.UPLOADTHING_APP_ID,
-    UPLOADTHING_SECRET: process.env.UPLOADTHING_SECRET,
+  experimental__runtimeEnv: {
     NODE_ENV: process.env.NODE_ENV,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },
@@ -38,4 +36,5 @@ export const env = createEnv({
    * useful for Docker builds.
    */
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
+  emptyStringAsUndefined: true,
 });

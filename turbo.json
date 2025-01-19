@@ -1,26 +1,58 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "ui": "tui",
   "globalDependencies": ["**/.env.*local"],
-  "pipeline": {
+  "globalEnv": [
+    "UPLOADTHING_TOKEN",
+    "UPLOADTHING_TEST_TOKEN",
+    "EXPO_PUBLIC_SERVER_ORIGIN",
+    "UPLOADTHING_API_URL",
+    "UPLOADTHING_INGEST_URL"
+  ],
+  "globalPassThroughEnv": [
+    "VERCEL_URL",
+    "VERCEL_ENV",
+    "NODE",
+    "NODE_ENV",
+    "CI"
+  ],
+  "tasks": {
+    "topo": {
+      "dependsOn": ["^topo"]
+    },
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": [
+        "dist/**",
+        ".next/**",
+        "!.next/cache/**",
+        ".svelte-kit/**",
+        ".vinxi/**",
+        ".output/**",
+        ".astro/**"
+      ]
     },
     "lint": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^topo", "^build"],
       "outputs": []
     },
     "dev": {
-      "cache": false
+      "cache": false,
+      "persistent": true,
+      "interactive": true
     },
     "clean": {
       "cache": false
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^topo", "^build"]
+    },
+    "//#test": {
+      "dependsOn": []
     },
     "test": {
-      "dependsOn": ["build"]
+      "cache": false,
+      "dependsOn": []
     },
     "test:watch": {
       "cache": false

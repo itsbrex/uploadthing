@@ -1,88 +1,46 @@
-import type { FastifyInstance, RouteHandlerMethod } from "fastify";
+import * as Effect from "effect/Effect";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { Json } from "@uploadthing/shared";
-import { getStatusCodeFromError, UploadThingError } from "@uploadthing/shared";
 
-import { UPLOADTHING_VERSION } from "./constants";
-import { defaultErrorFormatter } from "./internal/error-formatter";
-import type { RouterWithConfig } from "./internal/handler";
-import {
-  buildPermissionsInfoHandler,
-  buildRequestHandler,
-} from "./internal/handler";
-import type { FileRouter, inferErrorShape } from "./internal/types";
-import type { CreateBuilderOptions } from "./internal/upload-builder";
-import { createBuilder } from "./internal/upload-builder";
+import { makeAdapterHandler } from "./_internal/handler";
+import { toWebRequest } from "./_internal/to-web-request";
+import type { CreateBuilderOptions } from "./_internal/upload-builder";
+import { createBuilder } from "./_internal/upload-builder";
+import type { FileRouter, RouteHandlerOptions } from "./types";
 
-export type { FileRouter } from "./internal/types";
+export { UTFiles } from "./_internal/types";
+export type { FileRouter };
+
+type AdapterArgs = {
+  req: FastifyRequest;
+  res: FastifyReply;
+  event: undefined;
+};
 
 export const createUploadthing = <TErrorShape extends Json>(
   opts?: CreateBuilderOptions<TErrorShape>,
-) => createBuilder<"fastify", TErrorShape>(opts);
+) => createBuilder<AdapterArgs, TErrorShape>(opts);
 
-export const fastifyUploadthingPlugin = <TRouter extends FileRouter>(
+export const createRouteHandler = <TRouter extends FileRouter>(
   fastify: FastifyInstance,
-  opts: RouterWithConfig<TRouter>,
+  opts: RouteHandlerOptions<TRouter>,
   done: (err?: Error) => void,
 ) => {
-  const requestHandler = buildRequestHandler<TRouter, "fastify">(opts);
+  const handler = makeAdapterHandler<[FastifyRequest, FastifyReply]>(
+    (req, res) => Effect.succeed({ req, res, event: undefined }),
+    (req) => toWebRequest(req),
+    opts,
+    "fastify",
+  );
 
-  const POST: RouteHandlerMethod = async (req, res) => {
-    const response = await requestHandler({
-      req: Object.assign(req, {
-        json: () => Promise.resolve(req.body),
-      }),
-      res,
-    });
-    const errorFormatter =
-      opts.router[Object.keys(opts.router)[0]]?._def.errorFormatter ??
-      defaultErrorFormatter;
-
-    if (response instanceof UploadThingError) {
-      const formattedError = errorFormatter(
-        response,
-      ) as inferErrorShape<TRouter>;
-
-      void res
-        .status(getStatusCodeFromError(response))
-        .headers({
-          "x-uploadthing-version": UPLOADTHING_VERSION,
-        })
-        .send(formattedError);
-      return;
-    }
-
-    if (response.status !== 200) {
-      // We messed up - this should never happen
-      void res
-        .status(500)
-        .headers({
-          "x-uploadthing-version": UPLOADTHING_VERSION,
-        })
-        .send("An unknown error occured");
-      return;
-    }
-
-    void res
+  fastify.all("/api/uploadthing", async (req, res) => {
+    const response = await handler(req, res);
+    return res
       .status(response.status)
-      .headers({
-        "x-uploadthing-version": UPLOADTHING_VERSION,
-      })
+      .headers(Object.fromEntries(response.headers))
       .send(response.body);
-  };
-
-  const getBuildPerms = buildPermissionsInfoHandler<TRouter>(opts);
-
-  const GET: RouteHandlerMethod = (_, res) => {
-    void res
-      .status(200)
-      .headers({
-        "x-uploadthing-version": UPLOADTHING_VERSION,
-      })
-      .send(getBuildPerms());
-  };
-
-  fastify.post("/api/uploadthing", POST).get("/api/uploadthing", GET);
+  });
 
   done();
 };

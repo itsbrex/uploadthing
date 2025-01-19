@@ -1,12 +1,26 @@
+import * as Micro from "effect/Micro";
+
 import { lookup } from "@uploadthing/mime-types";
 
 import type { AllowedFileType } from "./file-types";
+import {
+  InvalidFileSizeError,
+  InvalidFileTypeError,
+  InvalidRouteConfigError,
+  InvalidURLError,
+  UnknownFileTypeError,
+} from "./tagged-errors";
 import type {
   ExpandedRouteConfig,
-  FileData,
+  FileProperties,
   FileRouterInputConfig,
   FileRouterInputKey,
   FileSize,
+  Json,
+  ResponseEsque,
+  RouteConfig,
+  Time,
+  TimeShort,
 } from "./types";
 
 export function isRouteArray(
@@ -26,62 +40,79 @@ export function getDefaultSizeForType(fileType: FileRouterInputKey): FileSize {
   return "4MB";
 }
 
+export function getDefaultRouteConfigValues(
+  type: FileRouterInputKey,
+): RouteConfig<Record<string, never>> {
+  return {
+    maxFileSize: getDefaultSizeForType(type),
+    maxFileCount: 1,
+    minFileCount: 1,
+    contentDisposition: "inline" as const,
+  };
+}
+
 /**
  * This function takes in the user's input and "upscales" it to a full config
+ * Additionally, it replaces numbers with "safe" equivalents
  *
  * Example:
  * ```ts
  * ["image"] => { image: { maxFileSize: "4MB", limit: 1 } }
  * ```
  */
-export function fillInputRouteConfig(
+
+export const fillInputRouteConfig = (
   routeConfig: FileRouterInputConfig,
-): ExpandedRouteConfig {
+): Micro.Micro<ExpandedRouteConfig, InvalidRouteConfigError> => {
   // If array, apply defaults
   if (isRouteArray(routeConfig)) {
-    return routeConfig.reduce<ExpandedRouteConfig>((acc, fileType) => {
-      acc[fileType] = {
-        // Apply defaults
-        maxFileSize: getDefaultSizeForType(fileType),
-        maxFileCount: 1,
-      };
-      return acc;
-    }, {});
+    return Micro.succeed(
+      routeConfig.reduce<ExpandedRouteConfig>((acc, fileType) => {
+        acc[fileType] = getDefaultRouteConfigValues(fileType);
+        return acc;
+      }, {}),
+    );
   }
 
   // Backfill defaults onto config
   const newConfig: ExpandedRouteConfig = {};
-  const inputKeys = Object.keys(routeConfig) as FileRouterInputKey[];
-  inputKeys.forEach((key) => {
+  for (const key of objectKeys(routeConfig)) {
     const value = routeConfig[key];
-    if (!value) throw new Error("Invalid config during fill");
+    if (!value) return Micro.fail(new InvalidRouteConfigError(key));
+    newConfig[key] = { ...getDefaultRouteConfigValues(key), ...value };
+  }
 
-    const defaultValues = {
-      maxFileSize: getDefaultSizeForType(key),
-      maxFileCount: 1,
-    };
+  // we know that the config is valid, so we can stringify it and parse it back
+  // this allows us to replace numbers with "safe" equivalents
+  return Micro.succeed(
+    JSON.parse(
+      JSON.stringify(newConfig, safeNumberReplacer),
+    ) as ExpandedRouteConfig,
+  );
+};
 
-    newConfig[key] = { ...defaultValues, ...value };
-  }, {} as ExpandedRouteConfig);
-
-  return newConfig;
-}
-
-export function getTypeFromFileName(
-  fileName: string,
+/**
+ * Match the file's type for a given allow list e.g. `image/png => image`
+ * Prefers the file's type, then falls back to a extension-based lookup
+ */
+export const matchFileType = (
+  file: FileProperties,
   allowedTypes: FileRouterInputKey[],
-) {
-  const mimeType = lookup(fileName);
+): Micro.Micro<
+  FileRouterInputKey,
+  UnknownFileTypeError | InvalidFileTypeError
+> => {
+  // Type might be "" if the browser doesn't recognize the mime type
+  const mimeType = file.type || lookup(file.name);
   if (!mimeType) {
-    throw new Error(
-      `Could not determine type for ${fileName}, presigned URL generation failed`,
-    );
+    if (allowedTypes.includes("blob")) return Micro.succeed("blob");
+    return Micro.fail(new UnknownFileTypeError(file.name));
   }
 
   // If the user has specified a specific mime type, use that
   if (allowedTypes.some((type) => type.includes("/"))) {
-    if (allowedTypes.includes(mimeType)) {
-      return mimeType;
+    if (allowedTypes.includes(mimeType as FileRouterInputKey)) {
+      return Micro.succeed(mimeType as FileRouterInputKey);
     }
   }
 
@@ -95,119 +126,217 @@ export function getTypeFromFileName(
   if (!allowedTypes.includes(type)) {
     // Blob is a catch-all for any file type not explicitly supported
     if (allowedTypes.includes("blob")) {
-      return "blob";
+      return Micro.succeed("blob");
     } else {
-      throw new Error(`File type ${type} not allowed for ${fileName}`);
+      return Micro.fail(new InvalidFileTypeError(type, file.name));
     }
   }
 
-  return type;
-}
-
-export function generateUploadThingURL(path: `/${string}`) {
-  let host = "https://uploadthing.com";
-
-  if (typeof process !== "undefined") {
-    host = process.env.CUSTOM_INFRA_URL ?? host;
-  } else {
-    // @ts-expect-error - import.meta is dumb
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment
-    host = import.meta.env.CUSTOM_INFRA_URL ?? host;
-  }
-  return `${host}${path}`;
-}
-
-export const withExponentialBackoff = async <T>(
-  doTheThing: () => Promise<T | null>,
-  MAXIMUM_BACKOFF_MS = 64 * 1000,
-  MAX_RETRIES = 20,
-): Promise<T | null> => {
-  let tries = 0;
-  let backoffMs = 500;
-  let backoffFuzzMs = 0;
-
-  let result = null;
-  while (tries <= MAX_RETRIES) {
-    result = await doTheThing();
-    if (result !== null) return result;
-
-    tries += 1;
-    backoffMs = Math.min(MAXIMUM_BACKOFF_MS, backoffMs * 2);
-    backoffFuzzMs = Math.floor(Math.random() * 500);
-
-    if (tries > 3) {
-      console.error(
-        `[UT] Call unsuccessful after ${tries} tries. Retrying in ${Math.floor(
-          backoffMs / 1000,
-        )} seconds...`,
-      );
-    }
-
-    await new Promise((r) => setTimeout(r, backoffMs + backoffFuzzMs));
-  }
-
-  return null;
+  return Micro.succeed(type);
 };
 
-export async function pollForFileData(
-  fileKey: string,
-  callback?: (json: any) => Promise<any>,
-) {
-  const queryUrl = generateUploadThingURL(`/api/pollUpload/${fileKey}`);
-
-  return withExponentialBackoff(async () => {
-    const res = await fetch(queryUrl);
-    const json = (await res.json()) as
-      | { status: "done"; fileData: FileData }
-      | { status: "something else" };
-
-    if (json.status !== "done") return null;
-
-    await callback?.(json);
-  });
-}
-
-export function getUploadthingUrl() {
-  /**
-   * The pathname must be /api/uploadthing
-   * since we call that via webhook, so the user
-   * should not override that. Just the protocol and host
-   *
-   * User can override the callback url with the UPLOADTHING_URL env var,
-   * if they do, they should include the protocol
-   */
-  const uturl = process.env.UPLOADTHING_URL;
-  if (uturl) return `${uturl}/api/uploadthing`;
-
-  /**
-   * If the VERCEL_URL is set, we will fall back to that next.
-   * They don't set the protocol, however, so we need to add it
-   */
-  const vcurl = process.env.VERCEL_URL;
-  if (vcurl) return `https://${vcurl}/api/uploadthing`; // SSR should use vercel url
-
-  return `http://localhost:${process.env.PORT ?? 3000}/api/uploadthing`; // dev SSR should use localhost
-}
-
-export const FILESIZE_UNITS = ["B", "KB", "MB", "GB"] as const;
+export const FILESIZE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 export type FileSizeUnit = (typeof FILESIZE_UNITS)[number];
-export const fileSizeToBytes = (input: string) => {
+export const fileSizeToBytes = (
+  fileSize: FileSize,
+): Micro.Micro<number, InvalidFileSizeError> => {
   const regex = new RegExp(
     `^(\\d+)(\\.\\d+)?\\s*(${FILESIZE_UNITS.join("|")})$`,
     "i",
   );
-  const match = input.match(regex);
 
-  if (!match) {
-    return new Error("Invalid file size format");
+  // make sure the string is in the format of 123KB
+  const match = fileSize.match(regex);
+  if (!match?.[1] || !match[3]) {
+    return Micro.fail(new InvalidFileSizeError(fileSize));
   }
 
   const sizeValue = parseFloat(match[1]);
   const sizeUnit = match[3].toUpperCase() as FileSizeUnit;
-
-  if (!FILESIZE_UNITS.includes(sizeUnit)) {
-    throw new Error("Invalid file size unit");
-  }
   const bytes = sizeValue * Math.pow(1024, FILESIZE_UNITS.indexOf(sizeUnit));
-  return Math.floor(bytes);
+  return Micro.succeed(Math.floor(bytes));
 };
+
+export const bytesToFileSize = (bytes: number) => {
+  if (bytes === 0 || bytes === -1) {
+    return "0B";
+  }
+
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(2)}${FILESIZE_UNITS[i]}`;
+};
+
+export async function safeParseJSON<T>(
+  input: ResponseEsque,
+): Promise<T | Error> {
+  const text = await input.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`Error parsing JSON, got '${text}'`, err);
+    return new Error(`Error parsing JSON, got '${text}'`);
+  }
+}
+
+/** typesafe Object.keys */
+export function objectKeys<T extends Record<string, unknown>>(
+  obj: T,
+): (keyof T)[] {
+  return Object.keys(obj) as (keyof T)[];
+}
+
+export function filterDefinedObjectValues<T>(
+  obj: Record<string, T | null | undefined>,
+): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(obj).filter((pair): pair is [string, T] => pair[1] != null),
+  );
+}
+
+export function semverLite(required: string, toCheck: string) {
+  // Pull out numbers from strings like `6.0.0`, `^6.4`, `~6.4.0`
+  const semverRegex = /(\d+)\.?(\d+)?\.?(\d+)?/;
+  const requiredMatch = semverRegex.exec(required);
+  if (!requiredMatch?.[0]) {
+    throw new Error(`Invalid semver requirement: ${required}`);
+  }
+  const toCheckMatch = semverRegex.exec(toCheck);
+  if (!toCheckMatch?.[0]) {
+    throw new Error(`Invalid semver to check: ${toCheck}`);
+  }
+
+  const [_1, rMajor, rMinor, rPatch] = requiredMatch;
+  const [_2, cMajor, cMinor, cPatch] = toCheckMatch;
+
+  if (required.startsWith("^")) {
+    // Major must be equal, minor must be greater or equal
+    if (rMajor !== cMajor) return false;
+    if (rMinor && cMinor && rMinor > cMinor) return false;
+    return true;
+  }
+
+  if (required.startsWith("~")) {
+    // Major must be equal, minor must be equal
+    if (rMajor !== cMajor) return false;
+    if (rMinor !== cMinor) return false;
+    return true;
+  }
+
+  // Exact match
+  return rMajor === cMajor && rMinor === cMinor && rPatch === cPatch;
+}
+
+export function warnIfInvalidPeerDependency(
+  pkg: string,
+  required: string,
+  toCheck: string,
+) {
+  if (!semverLite(required, toCheck)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `!!!WARNING::: ${pkg} requires "uploadthing@${required}", but version "${toCheck}" is installed`,
+    );
+  }
+}
+
+export const getRequestUrl = (req: Request) =>
+  Micro.gen(function* () {
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    const proto = req.headers.get("x-forwarded-proto") ?? "https";
+    const protocol = proto.endsWith(":") ? proto : `${proto}:`;
+    const url = yield* Micro.try({
+      try: () => new URL(req.url, `${protocol}//${host}`),
+      catch: () => new InvalidURLError(req.url),
+    });
+    url.search = "";
+    return url;
+  });
+
+export const getFullApiUrl = (
+  maybeUrl?: string,
+): Micro.Micro<URL, InvalidURLError> =>
+  Micro.gen(function* () {
+    const base = (() => {
+      if (typeof window !== "undefined") return window.location.origin;
+      if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+      return "http://localhost:3000";
+    })();
+
+    const url = yield* Micro.try({
+      try: () => new URL(maybeUrl ?? "/api/uploadthing", base),
+      catch: () => new InvalidURLError(maybeUrl ?? "/api/uploadthing"),
+    });
+
+    if (url.pathname === "/") {
+      url.pathname = "/api/uploadthing";
+    }
+    return url;
+  });
+
+/*
+ * Returns a full URL to the dev's uploadthing endpoint
+ * Can take either an origin, or a pathname, or a full URL
+ * and will return the "closest" url matching the default
+ * `<VERCEL_URL || localhost>/api/uploadthing`
+ */
+export const resolveMaybeUrlArg = (maybeUrl: string | URL | undefined): URL => {
+  return maybeUrl instanceof URL
+    ? maybeUrl
+    : Micro.runSync(getFullApiUrl(maybeUrl));
+};
+
+export function parseTimeToSeconds(time: Time) {
+  if (typeof time === "number") return time;
+
+  const match = time.split(/(\d+)/).filter(Boolean);
+  const num = Number(match[0]);
+  const unit = (match[1] ?? "s").trim().slice(0, 1) as TimeShort;
+
+  const multiplier = {
+    s: 1,
+    m: 60,
+    h: 3600,
+    d: 86400,
+  }[unit];
+
+  return num * multiplier;
+}
+
+/**
+ * Replacer for JSON.stringify that will replace numbers that cannot be
+ * serialized to JSON with "reasonable equivalents".
+ *
+ * Infinity and -Infinity are replaced by MAX_SAFE_INTEGER and MIN_SAFE_INTEGER
+ * NaN is replaced by 0
+ *
+ */
+export const safeNumberReplacer = (_: string, value: unknown) => {
+  if (typeof value !== "number") return value;
+  if (
+    Number.isSafeInteger(value) ||
+    (value <= Number.MAX_SAFE_INTEGER && value >= Number.MIN_SAFE_INTEGER)
+  ) {
+    return value;
+  }
+  if (value === Infinity) return Number.MAX_SAFE_INTEGER;
+  if (value === -Infinity) return Number.MIN_SAFE_INTEGER;
+  if (Number.isNaN(value)) return 0;
+};
+
+export function noop() {
+  // noop
+}
+
+export function createIdentityProxy<TObj extends Record<string, unknown>>() {
+  return new Proxy(noop, {
+    get: (_, prop) => prop,
+  }) as unknown as TObj;
+}
+
+export function unwrap<T extends Json | PropertyKey, Param extends unknown[]>(
+  x: T | ((...args: Param) => T),
+  ...args: Param
+) {
+  return typeof x === "function" ? x(...args) : x;
+}

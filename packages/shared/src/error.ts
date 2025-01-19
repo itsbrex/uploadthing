@@ -1,3 +1,6 @@
+import * as Micro from "effect/Micro";
+import * as Predicate from "effect/Predicate";
+
 import type { Json } from "./types";
 
 const ERROR_CODES = {
@@ -18,10 +21,17 @@ const ERROR_CODES = {
   URL_GENERATION_FAILED: 500,
   UPLOAD_FAILED: 500,
   MISSING_ENV: 500,
+  INVALID_SERVER_CONFIG: 500,
   FILE_LIMIT_EXCEEDED: 500,
 } as const;
 
 type ErrorCode = keyof typeof ERROR_CODES;
+type UploadThingErrorOptions<T> = {
+  code: keyof typeof ERROR_CODES;
+  message?: string | undefined;
+  cause?: unknown;
+  data?: T;
+};
 
 function messageFromUnknown(cause: unknown, fallback?: string) {
   if (typeof cause === "string") {
@@ -41,57 +51,51 @@ function messageFromUnknown(cause: unknown, fallback?: string) {
   return fallback ?? "An unknown error occurred";
 }
 
+export interface SerializedUploadThingError {
+  code: ErrorCode;
+  message: string;
+  data?: Json;
+}
+
 export class UploadThingError<
   TShape extends Json = { message: string },
-> extends Error {
-  public readonly cause?: Error;
-  public readonly code: ErrorCode;
-  public readonly data?: TShape;
+> extends Micro.Error<{ message: string }> {
+  readonly _tag = "UploadThingError";
+  readonly name = "UploadThingError";
 
-  constructor(opts: {
-    code: keyof typeof ERROR_CODES;
-    message?: string;
-    cause?: unknown;
-    data?: TShape;
-  }) {
+  public readonly cause?: unknown;
+  public readonly code: ErrorCode;
+  public readonly data: TShape | undefined;
+
+  constructor(initOpts: UploadThingErrorOptions<TShape> | string) {
+    const opts: UploadThingErrorOptions<TShape> =
+      typeof initOpts === "string"
+        ? { code: "INTERNAL_SERVER_ERROR", message: initOpts }
+        : initOpts;
     const message = opts.message ?? messageFromUnknown(opts.cause, opts.code);
 
-    super(message);
+    super({ message });
     this.code = opts.code;
     this.data = opts.data;
 
     if (opts.cause instanceof Error) {
       this.cause = opts.cause;
-    } else if (opts.cause instanceof Response) {
+    } else if (
+      Predicate.isRecord(opts.cause) &&
+      Predicate.isNumber(opts.cause.status) &&
+      Predicate.isString(opts.cause.statusText)
+    ) {
       this.cause = new Error(
         `Response ${opts.cause.status} ${opts.cause.statusText}`,
       );
-    } else if (typeof opts.cause === "string") {
+    } else if (Predicate.isString(opts.cause)) {
       this.cause = new Error(opts.cause);
     } else {
-      this.cause = undefined;
+      this.cause = opts.cause;
     }
   }
 
-  public static async fromResponse(response: Response) {
-    const json = (await response.json()) as Json;
-    let message: string | undefined = undefined;
-    if (json !== null && typeof json === "object" && !Array.isArray(json)) {
-      if (typeof json.message === "string") {
-        message = json.message;
-      } else if (typeof json.error === "string") {
-        message = json.error;
-      }
-    }
-    return new UploadThingError({
-      message,
-      code: getErrorTypeFromStatusCode(response.status),
-      cause: response,
-      data: json,
-    });
-  }
-
-  public static toObject(error: UploadThingError) {
+  public static toObject(error: UploadThingError): SerializedUploadThingError {
     return {
       code: error.code,
       message: error.message,
@@ -104,11 +108,7 @@ export class UploadThingError<
   }
 }
 
-export function getStatusCodeFromError(error: UploadThingError<any>) {
-  return ERROR_CODES[error.code] ?? 500;
-}
-
-function getErrorTypeFromStatusCode(statusCode: number): ErrorCode {
+export function getErrorTypeFromStatusCode(statusCode: number): ErrorCode {
   for (const [code, status] of Object.entries(ERROR_CODES)) {
     if (status === statusCode) {
       return code as ErrorCode;
@@ -116,3 +116,14 @@ function getErrorTypeFromStatusCode(statusCode: number): ErrorCode {
   }
   return "INTERNAL_SERVER_ERROR";
 }
+
+export function getStatusCodeFromError(error: UploadThingError<any>) {
+  return ERROR_CODES[error.code];
+}
+
+export const INTERNAL_DO_NOT_USE__fatalClientError = (e: Error) =>
+  new UploadThingError({
+    code: "INTERNAL_CLIENT_ERROR",
+    message: "Something went wrong. Please report this to UploadThing.",
+    cause: e,
+  });

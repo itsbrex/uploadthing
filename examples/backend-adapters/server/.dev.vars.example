@@ -1,0 +1,3 @@
+# Go to https://uploadthing.com/dashboard to get your token
+UPLOADTHING_TOKEN=''
+ENVIRONMENT='development'

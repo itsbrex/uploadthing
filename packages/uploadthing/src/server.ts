@@ -1,17 +1,44 @@
+import * as Effect from "effect/Effect";
+
 import type { Json } from "@uploadthing/shared";
+import { UploadThingError } from "@uploadthing/shared";
 
-import { buildPermissionsInfoHandler } from "./internal/handler";
-import type { FileRouter } from "./internal/types";
-import type { CreateBuilderOptions } from "./internal/upload-builder";
-import { createBuilder } from "./internal/upload-builder";
+import { makeAdapterHandler } from "./_internal/handler";
+import { extractRouterConfig as extractEffect } from "./_internal/route-config";
+import type { CreateBuilderOptions } from "./_internal/upload-builder";
+import { createBuilder } from "./_internal/upload-builder";
+import type { FileRouter, RouteHandlerOptions } from "./types";
 
-export * from "./internal/types";
-export * as utapi from "./sdk";
-export { createServerHandler } from "./internal/edge";
+export { UTFiles } from "./_internal/types";
+export { UTApi } from "./sdk";
+export { UTFile } from "./sdk/ut-file";
+export { UploadThingError, type FileRouter };
+
+type AdapterArgs = {
+  req: Request;
+  res: undefined;
+  event: undefined;
+};
 
 export const createUploadthing = <TErrorShape extends Json>(
   opts?: CreateBuilderOptions<TErrorShape>,
-) => createBuilder<"web", TErrorShape>(opts);
+) => createBuilder<AdapterArgs, TErrorShape>(opts);
+
+export const createRouteHandler = <TRouter extends FileRouter>(
+  opts: RouteHandlerOptions<TRouter>,
+) => {
+  return makeAdapterHandler<[Request | { request: Request }]>(
+    (ev) =>
+      Effect.succeed({
+        req: "request" in ev ? ev.request : ev,
+        res: undefined,
+        event: undefined,
+      }),
+    (ev) => Effect.succeed("request" in ev ? ev.request : ev),
+    opts,
+    "server",
+  );
+};
 
 export const extractRouterConfig = (router: FileRouter) =>
-  buildPermissionsInfoHandler({ router })();
+  Effect.runSync(extractEffect(router));

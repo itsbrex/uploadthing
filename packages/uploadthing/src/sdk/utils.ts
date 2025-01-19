@@ -1,164 +1,158 @@
-import type { File as UndiciFile } from "undici";
+import { HttpClient, HttpClientRequest } from "@effect/platform";
+import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 
-import type { Json } from "@uploadthing/shared";
 import {
-  generateUploadThingURL,
-  pollForFileData,
+  generateKey,
+  generateSignedURL,
   UploadThingError,
 } from "@uploadthing/shared";
+import type {
+  ACL,
+  ContentDisposition,
+  Json,
+  MaybeUrl,
+  SerializedUploadThingError,
+} from "@uploadthing/shared";
 
-import { maybeParseResponseXML } from "../internal/s3-error-parser";
+import { IngestUrl, UTToken } from "../_internal/config";
+import { uploadWithoutProgress } from "../_internal/upload-server";
+import type { UploadedFileData } from "../types";
+import type { FileEsque, UrlWithOverrides } from "./types";
+import { UTFile } from "./ut-file";
 
-export type FileEsque = (Blob & { name: string }) | UndiciFile;
-
-export type UploadData = {
-  key: string;
-  url: string;
-  name: string;
-  size: number;
-};
-
-export type UploadError = {
-  code: string;
-  message: string;
-  data: any;
-};
-
-export const uploadFilesInternal = async (
-  data: {
-    files: FileEsque[];
-    metadata: Json;
-  },
-  opts: {
-    apiKey: string;
-    utVersion: string;
-  },
-) => {
-  // Request presigned URLs for each file
-  const fileData = data.files.map((file) => ({
-    name: file.name ?? "unnamed-blob",
-    type: file.type,
-    size: file.size,
-  }));
-  const res = await fetch(generateUploadThingURL("/api/uploadFiles"), {
-    method: "POST",
-    headers: {
-      "x-uploadthing-api-key": opts.apiKey,
-      "x-uploadthing-version": opts.utVersion,
-    },
-    cache: "no-store",
-    body: JSON.stringify({
-      files: fileData,
-      metadata: data.metadata,
-    }),
-  });
-
-  if (!res.ok) {
-    const error = await UploadThingError.fromResponse(res);
-    throw error;
+export function guardServerOnly() {
+  if (typeof window !== "undefined") {
+    throw new UploadThingError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "The `utapi` can only be used on the server.",
+    });
   }
+}
 
-  const clonedRes = res.clone(); // so that `UploadThingError.fromResponse()` can consume the body again
-  const json = (await res.json()) as
-    | {
-        data: {
-          presignedUrl: string; // url to post to
-          fields: Record<string, string>;
-          key: string;
-          fileUrl: string; // the final url of the file after upload
-        }[];
+export const downloadFile = (
+  _url: MaybeUrl | UrlWithOverrides,
+): Effect.Effect<UTFile, SerializedUploadThingError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    let url = Predicate.isRecord(_url) ? _url.url : _url;
+    if (typeof url === "string") {
+      // since dataurls will result in name being too long, tell the user
+      // to use uploadFiles instead.
+      if (url.startsWith("data:")) {
+        return yield* Effect.fail({
+          code: "BAD_REQUEST",
+          message:
+            "Please use uploadFiles() for data URLs. uploadFilesFromUrl() is intended for use with remote URLs only.",
+          data: undefined,
+        } satisfies SerializedUploadThingError);
       }
-    | { error: string };
-
-  if ("error" in json) {
-    const error = await UploadThingError.fromResponse(clonedRes);
-    throw error;
-  }
-
-  // Upload each file to S3
-  const uploads = await Promise.allSettled(
-    data.files.map(async (file, i) => {
-      const { presignedUrl, fields, key, fileUrl } = json.data[i];
-
-      if (!presignedUrl || !fields) {
-        throw new UploadThingError({
-          code: "URL_GENERATION_FAILED",
-          message: "Failed to generate presigned URL",
-          cause: JSON.stringify(json.data[i]),
-        });
-      }
-
-      const formData = new FormData();
-      formData.append("Content-Type", file.type);
-      Object.entries(fields).forEach(([key, value]) => {
-        formData.append(key, value);
-      });
-
-      formData.append(
-        "file",
-        // Handles case when there is no file name
-        file.name
-          ? (file as File)
-          : Object.assign(file as File, { name: "unnamed-blob" }),
-      );
-
-      // Do S3 upload
-      const s3res = await fetch(presignedUrl, {
-        method: "POST",
-        body: formData,
-        headers: new Headers({
-          Accept: "application/xml",
-        }),
-      });
-
-      if (!s3res.ok) {
-        // tell uploadthing infra server that upload failed
-        await fetch(generateUploadThingURL("/api/failureCallback"), {
-          method: "POST",
-          body: JSON.stringify({
-            fileKey: fields.key,
-          }),
-          headers: {
-            "x-uploadthing-api-key": opts.apiKey,
-            "x-uploadthing-version": opts.utVersion,
-          },
-        });
-
-        const text = await s3res.text();
-        const parsed = maybeParseResponseXML(text);
-        if (parsed?.message) {
-          throw new UploadThingError({
-            code: "UPLOAD_FAILED",
-            message: parsed.message,
-          });
-        }
-        throw new UploadThingError({
-          code: "UPLOAD_FAILED",
-          message: "Failed to upload file to storage provider",
-          cause: s3res,
-        });
-      }
-
-      // Poll for file to be available
-      await pollForFileData(key);
-
-      return {
-        key,
-        url: fileUrl,
-        name: file.name,
-        size: file.size,
-      };
-    }),
-  );
-
-  return uploads.map((upload) => {
-    if (upload.status === "fulfilled") {
-      const data = upload.value satisfies UploadData;
-      return { data, error: null };
     }
-    // We only throw UploadThingErrors, so this is safe
-    const reason = upload.reason as UploadThingError;
-    const error = UploadThingError.toObject(reason) satisfies UploadError;
-    return { data: null, error };
-  });
-};
+    url = new URL(url);
+
+    const {
+      name = url.pathname.split("/").pop() ?? "unknown-filename",
+      customId = undefined,
+    } = Predicate.isRecord(_url) ? _url : {};
+    const httpClient = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.filterStatusOk,
+    );
+
+    const arrayBuffer = yield* HttpClientRequest.get(url).pipe(
+      HttpClientRequest.modify({ headers: {} }),
+      httpClient.execute,
+      Effect.flatMap((_) => _.arrayBuffer),
+      Effect.mapError((cause) => {
+        return {
+          code: "BAD_REQUEST",
+          message: `Failed to download requested file: ${cause.message}`,
+          data: cause.toJSON() as Json,
+        } satisfies SerializedUploadThingError;
+      }),
+      Effect.scoped,
+    );
+
+    return new UTFile([arrayBuffer], name, {
+      customId,
+      lastModified: Date.now(),
+    });
+  }).pipe(Effect.withLogSpan("downloadFile"));
+
+const generatePresignedUrl = (
+  file: FileEsque,
+  cd: ContentDisposition,
+  acl: ACL | undefined,
+) =>
+  Effect.gen(function* () {
+    const { apiKey, appId } = yield* UTToken;
+    const baseUrl = yield* IngestUrl;
+
+    const key = yield* generateKey(file, appId);
+
+    const url = yield* generateSignedURL(`${baseUrl}/${key}`, apiKey, {
+      // ttlInSeconds: routeOptions.presignedURLTTL,
+      data: {
+        "x-ut-identifier": appId,
+        "x-ut-file-name": file.name,
+        "x-ut-file-size": file.size,
+        "x-ut-file-type": file.type,
+        "x-ut-custom-id": file.customId,
+        "x-ut-content-disposition": cd,
+        "x-ut-acl": acl,
+      },
+    });
+    return { url, key };
+  }).pipe(Effect.withLogSpan("generatePresignedUrl"));
+
+export const uploadFile = (
+  file: FileEsque,
+  opts: {
+    contentDisposition?: ContentDisposition | undefined;
+    acl?: ACL | undefined;
+  },
+): Effect.Effect<
+  UploadedFileData,
+  SerializedUploadThingError,
+  HttpClient.HttpClient
+> =>
+  Effect.gen(function* () {
+    const presigned = yield* generatePresignedUrl(
+      file,
+      opts.contentDisposition ?? "inline",
+      opts.acl,
+    ).pipe(
+      Effect.catchTag("UploadThingError", (e) =>
+        Effect.fail(UploadThingError.toObject(e)),
+      ),
+      Effect.catchTag("ConfigError", () =>
+        Effect.fail({
+          code: "INVALID_SERVER_CONFIG",
+          message: "Failed to generate presigned URL",
+        } satisfies SerializedUploadThingError),
+      ),
+    );
+    const response = yield* uploadWithoutProgress(file, presigned).pipe(
+      Effect.catchTag("UploadThingError", (e) =>
+        Effect.fail(UploadThingError.toObject(e)),
+      ),
+      Effect.catchTag("ResponseError", (e) =>
+        Effect.fail({
+          code: "UPLOAD_FAILED",
+          message: "Failed to upload file",
+          data: e.toJSON() as Json,
+        } satisfies SerializedUploadThingError),
+      ),
+    );
+
+    return {
+      key: presigned.key,
+      url: response.url,
+      appUrl: response.appUrl,
+      ufsUrl: response.ufsUrl,
+      lastModified: file.lastModified ?? Date.now(),
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      customId: file.customId ?? null,
+      fileHash: response.fileHash,
+    };
+  }).pipe(Effect.withLogSpan("uploadFile"));
